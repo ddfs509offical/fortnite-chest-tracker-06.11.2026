@@ -49,6 +49,8 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=4783, help="localhost bridge port")
     parser.add_argument("--no-bridge", action="store_true", help="do not open the bridge")
     parser.add_argument("--no-tray", action="store_true", help="skip the tray icon")
+    parser.add_argument("--always", action="store_true",
+                        help="show the island even when Fortnite is not running")
     parser.add_argument("--start-hidden", action="store_true",
                         help="start with the island hidden (last state still remembered)")
     args = parser.parse_args(argv)
@@ -62,9 +64,12 @@ def main(argv=None) -> int:
     from .tracker import Tracker
 
     tracker = Tracker(os.path.join(data, "settings.json"))
+    # demo / screenshots / --always: no need to wait for Fortnite
+    tracker.require_game = not (args.always or args.demo or args.preview or args.snapshot)
 
     from .events import Bridge
-    from .hook import VK_F1, VK_NUMPAD_ADD, KeyHook
+    from .gamewatch import GameWatcher
+    from .hook import VK_F1, VK_F2, VK_F3, VK_NUMPAD_ADD, KeyHook
     from .overlay import OverlayWindow, PreviewWindow
 
     window = PreviewWindow(tracker) if args.preview else OverlayWindow(tracker)
@@ -102,11 +107,29 @@ def main(argv=None) -> int:
             if vk == VK_F1:
                 tracker.toggle()
                 window.island.snap()
+            elif vk == VK_F2:
+                tracker.chest("common")          # +1 chest
+            elif vk == VK_F3:
+                tracker.adjust(-1)               # -1 chest (undo)
             elif vk == VK_NUMPAD_ADD:
                 window.cycle_position()
 
     keys_timer.timeout.connect(_consume_keys)
     keys_timer.start()
+
+    # ---------------------------------------------------------------- Fortnite
+    watcher = GameWatcher(str(tracker.settings.get("game_process") or ""))
+
+    def _watch_game() -> None:
+        tracker.set_game_running(watcher.is_running())
+
+    game_timer = QTimer()
+    game_timer.setInterval(2000)
+    game_timer.setTimerType(Qt.TimerType.CoarseTimer)
+    game_timer.timeout.connect(_watch_game)
+    if tracker.require_game:
+        _watch_game()
+        game_timer.start()
 
     # ---------------------------------------------------------------- drain
     drain = QTimer()
@@ -152,9 +175,13 @@ def main(argv=None) -> int:
         menu = QMenu()
         act_toggle = QAction("Pause (F1)", menu)
         act_show = QAction("Hide island", menu)
+        act_force = QAction("Show without Fortnite", menu)
+        act_force.setCheckable(True)
+        act_force.setChecked(not tracker.require_game)
         act_quit = QAction("Quit", menu)
         menu.addAction(act_toggle)
         menu.addAction(act_show)
+        menu.addAction(act_force)
         menu.addSeparator()
         menu.addAction(act_quit)
 
@@ -171,11 +198,15 @@ def main(argv=None) -> int:
             tracker.settings["visible"] = window.isVisible()
             _sync()
 
+        def _force(on: bool) -> None:
+            tracker.force_show = bool(on)
+
+        act_force.toggled.connect(_force)
         act_toggle.triggered.connect(_toggle)
         act_show.triggered.connect(_show)
         act_quit.triggered.connect(app.quit)
         tray.setContextMenu(menu)
-        tray.setToolTip(APP_NAME + " — F1 on/off")
+        tray.setToolTip(APP_NAME + " — F1 on/off · F2 +1 · F3 −1")
         tray.show()
         tracker.listeners.append(_sync)
         _sync()

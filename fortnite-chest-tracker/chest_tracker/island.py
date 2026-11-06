@@ -25,6 +25,11 @@ BAR_IN = 0.40                  # load bar fills the island
 BAR_HOLD = 0.12                # glints at full width
 BAR_OUT = 0.34                 # bar drains back, revealing the hub
 
+# Fortnite start: the island grows out of a dot and fills with content
+OPEN_S = 1.0                   # width growth, seconds
+OPEN_CONTENT_AT = 0.35         # content starts fading in here
+CLOSE_S = 0.55                 # shrink + fade when the game exits
+
 _ICON_CACHE: dict = {}
 
 
@@ -68,6 +73,12 @@ def _ease_out(t: float) -> float:
     return 1.0 - (1.0 - t) ** 3
 
 
+def _smooth(t: float) -> float:
+    """Smoothstep: gentle start and gentle landing."""
+    t = min(1.0, max(0.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
 def _ease_in(t: float) -> float:
     t = min(1.0, max(0.0, t))
     return t * t
@@ -94,7 +105,7 @@ class IslandView:
         self.parent = parent
         self.screen_w = 1280.0
         self.screen_h = 720.0
-        self.kind = "main"            # main | idle | off
+        self.kind = "hidden"          # hidden | off | main
         self.comps: list[Comp] = []
         self.width = 0.0
         self.height = float(theme.PILL_H)
@@ -107,6 +118,10 @@ class IslandView:
         self.needs_clock = False
         self.position = "top"
         self._snap = True
+        self.opening = None           # t0 while growing out of a dot
+        self.closing = None           # (t0, width0) while shrinking away
+        self.content_alpha = 1.0
+        self.body_alpha = 1.0
 
         # F1 transition: None or (kind, t0) with kind in {"in", "out"}
         self.transition = None
@@ -135,21 +150,25 @@ class IslandView:
         return QRectF(x, y, w, self.height)
 
     def animating(self) -> bool:
-        return self.transition is not None or self.motion < 1.0
+        return (self.transition is not None or self.motion < 1.0
+                or self.opening is not None or self.closing is not None)
 
     # ------------------------------------------------------------------ state
-    def _play_text(self) -> str:
-        total = int(self.tracker.play_seconds())
-        if total >= 3600:
-            return f"{total // 3600}:{total // 60 % 60:02d}:{total % 60:02d}"
-        return f"{total // 60:02d}:{total % 60:02d}"
+    def _clock_text(self) -> str:
+        """Local time of this computer."""
+        return time.strftime("%H:%M")
+
+    def _kind(self) -> str:
+        t = self.tracker
+        if not t.panel_open():
+            return "hidden"
+        return "main" if t.enabled else "off"
 
     def _build(self) -> Layout:
         t = self.tracker
-        have = t.has_session()
         pad = theme.PAD_X
 
-        # -- hub when tracking is off: ⏻ OFF (red badge) + "Press F1"
+        # -- tracking off: red dot + OFF + "Press F1"
         if not t.enabled:
             label_font = _font(11.5, theme.QFont.Weight.DemiBold)
             hint = "Press F1"
@@ -165,30 +184,18 @@ class IslandView:
             w = pad * 2 + sum(c.w for c in comps) + theme.INNER_GAP * 1.4 * (len(comps) - 1)
             return Layout(w, theme.PILL_H, comps)
 
-        # -- hub before the first match: chest + "Ready" + ⏻ outline
-        if not have:
-            label_font = _font(11.5, theme.QFont.Weight.DemiBold)
-            comps = [
-                Comp("chest", 18, 18, {"color": CHEST_WHITE}),
-                Comp("text", _w("Ready", label_font), 11.5,
-                     {"text": "Ready", "font": label_font, "color": "#e6e6ea"}),
-                Comp("power", 19, 19, {"mode": "idle", "variant": "outline"}),
-            ]
-            w = pad * 2 + sum(c.w for c in comps) + theme.INNER_GAP * 1.4 * (len(comps) - 1)
-            return Layout(w, theme.PILL_H, comps)
-
-        # -- live tracker: chest · count · clock · time · ⏻ ON
+        # -- tracking on: chest · total · clock · local time · green dot
         n_text = str(t.chests)
         nfont = theme.num_font(17, theme.QFont.Weight.Bold, 0.2)
         tfont = theme.num_font(11.5, theme.QFont.Weight.Medium, 0.4)
-        play = self._play_text()
+        now_text = self._clock_text()
         comps = [
             Comp("chest", 18, 18, {"color": CHEST_WHITE}),
             Comp("text", _w(n_text, nfont), 17,
                  {"text": n_text, "font": nfont, "color": "#ffffff", "flash": True}),
             Comp("gap", 2.5, 4, {}),
             Comp("clock", 14, 14, {}),
-            Comp("text", _w(play, tfont), 11.5, {"text": play, "font": tfont, "color": "#a7a7b0"}),
+            Comp("text", _w(now_text, tfont), 11.5, {"text": now_text, "font": tfont, "color": "#b4b4bd"}),
             Comp("gap", 2.0, 4, {}),
             Comp("power", 19, 19, {"mode": "on"}),
         ]
@@ -197,11 +204,15 @@ class IslandView:
 
     def _rebuild_relaxed(self) -> None:
         lay = self._build()
-        self.kind = "off" if not self.tracker.enabled else ("main" if self.tracker.has_session() else "idle")
+        self.kind = self._kind()
         self.comps = lay.comps
         self.target_width = lay.width
         self.height = lay.height
-        if self._snap or self.motion == 0.0:
+        if self.kind == "hidden":
+            self.width = 0.0
+            self.body_alpha = 0.0
+            self.content_alpha = 0.0
+        else:
             self.width = lay.width
             self.motion = 1.0
         self.needs_clock = self.kind == "main"
@@ -220,70 +231,109 @@ class IslandView:
         self._last = now
         t = self.tracker
         want = self._build()
-        kind = "off" if not t.enabled else ("main" if t.has_session() else "idle")
+        kind = self._kind()
 
         if kind != self.kind:
-            if kind == "main":
+            prev = self.kind
+            if prev == "hidden":
+                # Fortnite is up (+delay): grow out of a dot, then fill with content
+                self.comps = want.comps
+                self.target_width = want.width
+                self.width = theme.PILL_H
+                self.motion = 1.0
+                self.content_alpha = 0.0
+                self.body_alpha = 0.0
+                self.transition = None
+                self.closing = None
+                self.opening = now
+            elif kind == "hidden":
+                # Fortnite closed: shrink back into a dot and fade out
+                self.closing = (now, max(self.width, theme.PILL_H))
+                self.opening = None
+                self.transition = None
+            elif kind == "main":
                 # F1 ON: a load bar sweeps across the whole island, then the
-                # connected layout settles in.
+                # tracker layout settles in.
                 self.width = 0.0
                 self.motion = 1.0
                 self.transition = ("in", now)
                 self.target_width = self._width_hint()
                 self.comps = want.comps
-            elif kind == "off":
+            else:
                 # F1 OFF: the bar drains and the hub slides back in.
                 self.transition = ("out", now)
                 self.target_width = max(self.width, self._width_hint())
                 self.comps = want.comps
-            else:
-                self.transition = None
-                self.comps = want.comps
-                self.target_width = want.width
             self.kind = kind
             self.needs_clock = kind == "main"
             self._anim = True
-        elif kind != "off":
+        elif kind == "main":
             texts = [c.data.get("text") for c in want.comps]
             if (texts != [c.data.get("text") for c in self.comps]
                     or abs(want.width - self.target_width) > 0.4):
-                if abs(want.width - self.target_width) > 0.4 and self.transition is None:
+                if (abs(want.width - self.target_width) > 0.4
+                        and self.transition is None and self.opening is None):
                     self.motion = min(self.motion, 0.5)
                 self.comps = want.comps
                 self.target_width = want.width
                 self._anim = True
 
-        if self.transition is not None:
-            phase, t0 = self.transition
-            if phase == "in":
-                elapsed = now - t0
-                if elapsed < BAR_IN:
-                    self.width = self.target_width * _ease_out(elapsed / BAR_IN)
-                elif elapsed < BAR_IN + BAR_HOLD:
-                    self.width = self.target_width
-                else:
-                    self.width = self.target_width
-                    self.motion = 0.82            # content fades in right away
-                    self.transition = None
-            else:
-                elapsed = now - t0
-                drained = 1.0 - _ease_in(elapsed / BAR_OUT)
-                self.width = max(want.width * 0.55, self.target_width * drained)
-
-        if self.transition is None or self.transition[0] != "in":
-            if self.motion < 1.0:
-                k = 1.0 - math.exp(-MORPH_K * dt)
-                self.motion = min(1.0, self.motion + k * (1.6 - self.motion))
-                self._anim = True
-            target = self.target_width if self.transition is None else self.width
-            w = self.width + (target - self.width) * (1.0 - math.exp(-MORPH_K * dt))
-            if abs(target - w) < 0.3:
-                w = target
-            if w != self.width:
-                self.width = w
-                self._anim = True
-        else:
+        if self.opening is not None:
+            e = now - self.opening
+            self.width = theme.PILL_H + (self.target_width - theme.PILL_H) * _smooth(e / OPEN_S)
+            self.body_alpha = min(1.0, e / 0.25)
+            self.content_alpha = _smooth((e - OPEN_CONTENT_AT) / (OPEN_S - OPEN_CONTENT_AT))
+            if e >= OPEN_S:
+                self.opening = None
+                self.width = self.target_width
+                self.body_alpha = 1.0
+                self.content_alpha = 1.0
             self._anim = True
+        elif self.closing is not None:
+            t0, w0 = self.closing
+            e = now - t0
+            self.content_alpha = 1.0 - min(1.0, e / 0.2)
+            self.width = theme.PILL_H + (w0 - theme.PILL_H) * (1.0 - _smooth(e / 0.4))
+            self.body_alpha = 1.0 - min(1.0, max(0.0, (e - 0.35) / 0.2))
+            if e >= CLOSE_S:
+                self.closing = None
+                self.width = 0.0
+                self.body_alpha = 0.0
+                self.content_alpha = 0.0
+            self._anim = True
+        else:
+            if self.transition is not None:
+                phase, t0 = self.transition
+                if phase == "in":
+                    elapsed = now - t0
+                    if elapsed < BAR_IN:
+                        self.width = self.target_width * _ease_out(elapsed / BAR_IN)
+                    elif elapsed < BAR_IN + BAR_HOLD:
+                        self.width = self.target_width
+                    else:
+                        self.width = self.target_width
+                        self.motion = 0.82            # content fades in right away
+                        self.transition = None
+                else:
+                    elapsed = now - t0
+                    drained = 1.0 - _ease_in(elapsed / BAR_OUT)
+                    self.width = max(want.width * 0.55, self.target_width * drained)
+
+            if self.kind != "hidden":
+                if self.transition is None or self.transition[0] != "in":
+                    if self.motion < 1.0:
+                        k = 1.0 - math.exp(-MORPH_K * dt)
+                        self.motion = min(1.0, self.motion + k * (1.6 - self.motion))
+                        self._anim = True
+                    target = self.target_width if self.transition is None else self.width
+                    w = self.width + (target - self.width) * (1.0 - math.exp(-MORPH_K * dt))
+                    if abs(target - w) < 0.3:
+                        w = target
+                    if w != self.width:
+                        self.width = w
+                        self._anim = True
+                else:
+                    self._anim = True
 
         if self._anim:
             self._anim = False
@@ -291,6 +341,8 @@ class IslandView:
 
     def snap(self) -> None:
         """Jump straight to the new size (used by CLI/tests, not by F1)."""
+        if self.kind == "hidden" or self.opening is not None or self.closing is not None:
+            return
         want = self._build()
         self.comps = want.comps
         self.target_width = want.width
@@ -301,17 +353,25 @@ class IslandView:
 
     # ------------------------------------------------------------------ primitives
     def _power(self, p: QPainter, r: QRectF, mode: str, variant: str = "badge") -> None:
-        pm = _power_pm(mode, variant, int(r.height()), 2.0)
-        size = pm.width() / pm.devicePixelRatio()
-        p.drawPixmap(QPointF(r.center().x() - size / 2, r.center().y() - size / 2), pm)
+        """Status light: plain green (tracking) or red (off), no symbol."""
+        base = QColor(RED if mode == "off" else GREEN)
+        d = min(r.width(), r.height()) * 0.62
+        c = r.center()
+        p.setPen(Qt.PenStyle.NoPen)
+        halo = QColor(base)
+        halo.setAlpha(70)
+        p.setBrush(halo)
+        p.drawEllipse(c, d / 2 + 2.4, d / 2 + 2.4)
+        p.setBrush(base)
+        p.drawEllipse(c, d / 2, d / 2)
 
     def _chest(self, p: QPainter, r: QRectF, color: str, pop: bool = False) -> None:
         t = self.tracker
         scale = 1.0
         age = time.monotonic() - t.pop_at
-        if pop and t.connected and age < 0.9:
+        if pop and t.enabled and age < 0.9:
             scale = 1.0 + 0.18 * math.exp(-6.0 * age)
-        glow = GOLD if (pop and t.connected) else None
+        glow = GOLD if (pop and t.enabled) else None
         pm = _chest_pm(color, glow, int(r.height()), 2.0)
         size = pm.width() / pm.devicePixelRatio()
         p.save()
@@ -319,7 +379,7 @@ class IslandView:
         p.scale(scale * (r.height() / 24.0), scale * (r.height() / 24.0))
         p.drawPixmap(QPointF(-size / 2, -size / 2), pm)
         p.restore()
-        if pop and t.connected and age < 0.6:
+        if pop and t.enabled and age < 0.6:
             u = age / 0.6
             ring = QColor(GOLD)
             ring.setAlpha(int(170 * (1 - u)))
@@ -366,19 +426,26 @@ class IslandView:
 
     # ------------------------------------------------------------------ paint
     def paint(self, p: QPainter) -> None:
+        if self.kind == "hidden" and self.closing is None:
+            return                                   # Fortnite is not running: draw nothing
+        if self.body_alpha <= 0.0 or self.width < 2.0:
+            return
+
         r = self.island_rect()
         rad = min(r.height() / 2.0, r.width() / 2.0)
         body = QPainterPath()
         body.addRoundedRect(r, rad, rad)
 
         t = self.tracker
-        status_on = t.enabled and (t.connected or self.transition is not None)
-        # calm by default: the halo only brightens for ~0.9 s after a chest opens
+        status_on = t.enabled and self.kind == "main"
+        # calm by default: the halo only brightens for ~0.9 s after a chest is counted
         chest_age = time.monotonic() - t.pop_at
-        pulse = max(0.0, 1.0 - chest_age / 0.9) if (status_on and t.connected) else 0.0
-        accent = GREEN if t.connected or (self.transition or (None,))[0] == "in" else RED
+        pulse = max(0.0, 1.0 - chest_age / 0.9) if status_on else 0.0
+        accent = GREEN if (t.enabled or (self.transition or (None,))[0] == "in") else RED
         glow = QColor(accent)
         glow.setAlpha(int(16 + 44 * pulse) if status_on else 0)
+
+        p.setOpacity(self.body_alpha)
         for spread, alpha in ((12.0, 20), (6.0, 22)):
             sh = QPainterPath()
             grow = spread + pulse * 2.0
@@ -398,17 +465,25 @@ class IslandView:
             progress = r.width() / self.target_width
             self._paint_bar(p, r, rad, min(1.0, progress), GREEN)
             if progress < 0.96:
+                p.setOpacity(1.0)
                 return
-            # bar completed: the connected content settles in over the full bar
+            # bar completed: the content settles in over the full bar
             self.motion = 0.36
 
-        if self.width < 8.0:
+        if self.width < 8.0 or self.content_alpha <= 0.0:
+            p.setOpacity(1.0)
             return
 
-        x = r.left() + theme.PAD_X
+        # content is centred in the current body and clipped to it, so while
+        # the island grows it is revealed from the middle instead of spilling out
+        total = sum(c.w + (0.0 if c.kind == "gap" else theme.INNER_GAP) for c in self.comps)
+        if self.comps and self.comps[-1].kind != "gap":
+            total -= theme.INNER_GAP
+        x = r.center().x() - total / 2.0
         cy = r.center().y()
-        alpha = min(1.0, 0.25 + self.motion)
-        p.setOpacity(alpha)
+        p.save()
+        p.setClipPath(body)
+        p.setOpacity(self.body_alpha * min(1.0, 0.25 + self.motion) * self.content_alpha)
         for c in self.comps:
             if c.kind == "gap":
                 x += c.w
@@ -424,7 +499,7 @@ class IslandView:
                 font = c.data["font"]
                 p.setFont(font)
                 col = QColor(c.data["color"])
-                if c.data.get("flash") and t.connected:
+                if c.data.get("flash") and t.enabled:
                     age = time.monotonic() - t.pop_at
                     if age < 0.6:                      # gold -> white as the count settles
                         u = _ease_out(age / 0.6)
@@ -439,5 +514,5 @@ class IslandView:
                 p.drawText(QPointF(x, cy + fm.ascent() - fm.height() / 2 + 1.0 + c.data.get("dy", 0.0)),
                            c.data["text"])
             x += c.w + theme.INNER_GAP
+        p.restore()
         p.setOpacity(1.0)
-

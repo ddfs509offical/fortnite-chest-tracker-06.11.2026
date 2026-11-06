@@ -1,4 +1,4 @@
-"""Global key watcher: F1 = on/off, Numpad + = move the island.
+"""Global key watcher: F1 = on/off, F2 = +1 chest, F3 = -1 chest, Numpad + = move the island.
 
 No hooks. The tracker polls ``GetAsyncKeyState`` from the Qt thread (~30 Hz).
 Polling only *reads* the keyboard state: nothing sits in the input path, so the
@@ -18,8 +18,10 @@ import sys
 
 VK_F1 = 0x70
 VK_NUMPAD_ADD = 0x6B
+VK_F2 = 0x71          # +1 chest
+VK_F3 = 0x72          # -1 chest (undo)
 
-_WATCHED = (VK_F1, VK_NUMPAD_ADD)
+_WATCHED = (VK_F1, VK_F2, VK_F3, VK_NUMPAD_ADD)
 
 
 class KeyHook:
