@@ -66,6 +66,7 @@ class Tracker:
         self.pop_at = 0.0
 
         # Fortnite process state (set from the Qt thread by the game watcher)
+        self.toggle_key_name = "F1"     # shown in the OFF hint; set by the app from the bindings
         self.require_game = True       # False: island is always shown (--always / demo)
         self.force_show = False        # tray switch "Show without Fortnite"
         self.game_running = False

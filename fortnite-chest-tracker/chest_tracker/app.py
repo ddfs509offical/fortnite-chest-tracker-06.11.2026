@@ -1,4 +1,4 @@
-"""Entry point: tray icon, F1 hotkey, localhost bridge and overlay wiring."""
+"""Entry point: tray icon, configurable hotkeys, localhost bridge and overlay wiring."""
 
 from __future__ import annotations
 
@@ -69,7 +69,9 @@ def main(argv=None) -> int:
 
     from .events import Bridge
     from .gamewatch import GameWatcher
-    from .hook import VK_F1, VK_F2, VK_F3, VK_NUMPAD_ADD, KeyHook
+    from .hook import KeyHook
+    from .keybinds import KeyBindDialog
+    from .keys import Bindings
     from .overlay import OverlayWindow, PreviewWindow
 
     window = PreviewWindow(tracker) if args.preview else OverlayWindow(tracker)
@@ -87,13 +89,15 @@ def main(argv=None) -> int:
         bridge = Bridge(tracker, port=args.port, hud_html=hud_html)
         bridge_ok = bridge.start()
 
-    # ---------------------------------------------------------------- F1
+    # ---------------------------------------------------------------- hotkeys
+    bindings = Bindings(tracker.settings.get("keys"))
+    tracker.toggle_key_name = bindings.name("toggle")
     key_flags = set()          # filled by the hook thread, consumed by the UI
 
     def on_key(vk: int) -> None:
         key_flags.add(vk)
 
-    hotkey = KeyHook(on_key)
+    hotkey = KeyHook(on_key, bindings.watched())
     hotkey_ok = hotkey.start()
 
     keys_timer = QTimer()
@@ -104,15 +108,24 @@ def main(argv=None) -> int:
         hotkey.poll()          # reads key state only; installs no hook
         while key_flags:
             vk = key_flags.pop()
-            if vk == VK_F1:
-                tracker.toggle()
-                window.island.snap()
-            elif vk == VK_F2:
-                tracker.chest("common")          # +1 chest
-            elif vk == VK_F3:
-                tracker.adjust(-1)               # -1 chest (undo)
-            elif vk == VK_NUMPAD_ADD:
-                window.cycle_position()
+            for action in bindings.actions_for(vk):
+                if action == "toggle":
+                    tracker.toggle()
+                    window.island.snap()
+                elif action == "plus":
+                    tracker.chest("common")          # +1 chest
+                elif action == "minus":
+                    tracker.adjust(-1)               # -1 chest (undo)
+                elif action == "move":
+                    window.cycle_position()
+
+    def _bindings_changed() -> None:
+        hotkey.set_watched(bindings.watched())
+        tracker.settings["keys"] = bindings.to_settings()
+        tracker.settings_store.save(tracker.settings)
+        tracker.toggle_key_name = bindings.name("toggle")
+        for cb in tracker.listeners:
+            cb()
 
     keys_timer.timeout.connect(_consume_keys)
     keys_timer.start()
@@ -169,24 +182,34 @@ def main(argv=None) -> int:
         demo.start()
         tracker.connected_event()
 
+    def _tip() -> str:
+        names = [(bindings.name(a), label) for a, label in
+                 (("toggle", "on/off"), ("plus", "+1"), ("minus", "−1"))]
+        return APP_NAME + " — " + " · ".join(f"{k} {lbl}" for k, lbl in names if k)
+
     # ---------------------------------------------------------------- tray
     if not args.preview and not args.no_tray and QSystemTrayIcon.isSystemTrayAvailable():
         tray = QSystemTrayIcon(_tray_icon(), app)
         menu = QMenu()
-        act_toggle = QAction("Pause (F1)", menu)
+        act_toggle = QAction("Pause", menu)
         act_show = QAction("Hide island", menu)
+        act_keys = QAction("Hotkeys…", menu)
         act_force = QAction("Show without Fortnite", menu)
         act_force.setCheckable(True)
         act_force.setChecked(not tracker.require_game)
         act_quit = QAction("Quit", menu)
         menu.addAction(act_toggle)
         menu.addAction(act_show)
+        menu.addAction(act_keys)
         menu.addAction(act_force)
         menu.addSeparator()
         menu.addAction(act_quit)
 
         def _sync() -> None:
-            act_toggle.setText("Resume (F1)" if not tracker.enabled else "Pause (F1)")
+            key = bindings.name("toggle")
+            suffix = f" ({key})" if key else ""
+            act_toggle.setText(("Resume" if not tracker.enabled else "Pause") + suffix)
+            tray.setToolTip(_tip())
             act_show.setText("Hide island" if window.isVisible() else "Show island")
 
         def _toggle() -> None:
@@ -202,11 +225,23 @@ def main(argv=None) -> int:
             tracker.force_show = bool(on)
 
         act_force.toggled.connect(_force)
+
+        keys_dialog: list = []
+
+        def _open_keys() -> None:
+            if not keys_dialog:
+                keys_dialog.append(KeyBindDialog(bindings, hotkey, _bindings_changed))
+            dlg = keys_dialog[0]
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+
+        act_keys.triggered.connect(_open_keys)
         act_toggle.triggered.connect(_toggle)
         act_show.triggered.connect(_show)
         act_quit.triggered.connect(app.quit)
         tray.setContextMenu(menu)
-        tray.setToolTip(APP_NAME + " — F1 on/off · F2 +1 · F3 −1")
+        tray.setToolTip(_tip())
         tray.show()
         tracker.listeners.append(_sync)
         _sync()
@@ -224,7 +259,7 @@ def main(argv=None) -> int:
             lambda: QMessageBox.information(
                 None,
                 APP_NAME,
-                "Не удалось начать отслеживание F1 — используйте пункт «Pause (F1)» в трее.",
+                "Не удалось начать отслеживание клавиш — используйте меню в трее (Pause / Resume).",
             ),
         )
 

@@ -168,10 +168,11 @@ class IslandView:
         t = self.tracker
         pad = theme.PAD_X
 
-        # -- tracking off: red dot + OFF + "Press F1"
+        # -- tracking off: red dot + OFF + "Press <key>"
         if not t.enabled:
             label_font = _font(11.5, theme.QFont.Weight.DemiBold)
-            hint = "Press F1"
+            key = getattr(t, "toggle_key_name", "F1")
+            hint = f"Press {key}" if key else "Use tray menu"
             hint_font = _font(8.5, theme.QFont.Weight.Medium)
             label = "OFF"
             comps = [
