@@ -184,7 +184,8 @@ class IslandView:
         play = self._play_text()
         comps = [
             Comp("chest", 18, 18, {"color": CHEST_WHITE}),
-            Comp("text", _w(n_text, nfont), 17, {"text": n_text, "font": nfont, "color": "#ffffff"}),
+            Comp("text", _w(n_text, nfont), 17,
+                 {"text": n_text, "font": nfont, "color": "#ffffff", "flash": True}),
             Comp("gap", 2.5, 4, {}),
             Comp("clock", 14, 14, {}),
             Comp("text", _w(play, tfont), 11.5, {"text": play, "font": tfont, "color": "#a7a7b0"}),
@@ -372,10 +373,12 @@ class IslandView:
 
         t = self.tracker
         status_on = t.enabled and (t.connected or self.transition is not None)
-        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 2.6) if status_on else 0.0
+        # calm by default: the halo only brightens for ~0.9 s after a chest opens
+        chest_age = time.monotonic() - t.pop_at
+        pulse = max(0.0, 1.0 - chest_age / 0.9) if (status_on and t.connected) else 0.0
         accent = GREEN if t.connected or (self.transition or (None,))[0] == "in" else RED
         glow = QColor(accent)
-        glow.setAlpha(int(30 + 26 * pulse) if status_on else 0)
+        glow.setAlpha(int(16 + 44 * pulse) if status_on else 0)
         for spread, alpha in ((12.0, 20), (6.0, 22)):
             sh = QPainterPath()
             grow = spread + pulse * 2.0
@@ -420,7 +423,18 @@ class IslandView:
             elif c.kind == "text":
                 font = c.data["font"]
                 p.setFont(font)
-                p.setPen(QColor(c.data["color"]))
+                col = QColor(c.data["color"])
+                if c.data.get("flash") and t.connected:
+                    age = time.monotonic() - t.pop_at
+                    if age < 0.6:                      # gold -> white as the count settles
+                        u = _ease_out(age / 0.6)
+                        gold = QColor(GOLD)
+                        col = QColor(
+                            round(gold.red() + (col.red() - gold.red()) * u),
+                            round(gold.green() + (col.green() - gold.green()) * u),
+                            round(gold.blue() + (col.blue() - gold.blue()) * u),
+                        )
+                p.setPen(col)
                 fm = QFontMetricsF(font)
                 p.drawText(QPointF(x, cy + fm.ascent() - fm.height() / 2 + 1.0 + c.data.get("dy", 0.0)),
                            c.data["text"])

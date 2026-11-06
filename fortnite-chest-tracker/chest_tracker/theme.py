@@ -5,8 +5,8 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QFont, QFontDatabase
 
 # --- colours ---------------------------------------------------------------
-ISLAND = QColor(8, 8, 10, 236)            # near-black island body
-ISLAND_EDGE = QColor(255, 255, 255, 26)   # hairline highlight along the rim
+ISLAND = QColor(8, 8, 10, 242)            # near-black island body
+ISLAND_EDGE = QColor(255, 255, 255, 36)   # hairline highlight along the rim
 WHITE = QColor(255, 255, 255)
 DIM = QColor(255, 255, 255, 150)          # secondary text (time, labels)
 FAINT = QColor(255, 255, 255, 70)         # dividers, hint text

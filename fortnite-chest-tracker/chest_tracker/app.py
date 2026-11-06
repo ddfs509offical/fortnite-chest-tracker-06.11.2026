@@ -96,6 +96,7 @@ def main(argv=None) -> int:
     keys_timer.setTimerType(Qt.TimerType.CoarseTimer)
 
     def _consume_keys() -> None:
+        hotkey.poll()          # reads key state only; installs no hook
         while key_flags:
             vk = key_flags.pop()
             if vk == VK_F1:
@@ -192,8 +193,7 @@ def main(argv=None) -> int:
             lambda: QMessageBox.information(
                 None,
                 APP_NAME,
-                "Не удалось перехватить F1 глобально — переключение будет работать "
-                "только когда трекер в фокусе. Используйте пункт «Pause (F1)» в трее.",
+                "Не удалось начать отслеживание F1 — используйте пункт «Pause (F1)» в трее.",
             ),
         )
 
