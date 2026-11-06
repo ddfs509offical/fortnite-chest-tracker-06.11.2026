@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fortnite Chest Tracker — HUD bridge</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0d;
+    --card: #16161a;
+    --line: rgba(255,255,255,.08);
+    --text: #f2f2f4;
+    --dim: #9a9aa2;
+    --green: #30d158;
+    --red: #ff453a;
+    --gold: #ffc457;
+    --blue: #0a84ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .2px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: var(--dim); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .08em; }
+  .island { display: flex; align-items: center; gap: 14px; background: #050506;
+    border-radius: 28px; padding: 14px 22px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    position: sticky; top: 16px; z-index: 5; transition: box-shadow .3s; }
+  .chest { font-size: 22px; filter: drop-shadow(0 0 6px rgba(255,196,87,.6)); }
+  .count { font-size: 24px; font-weight: 700; min-width: 34px; }
+  .clock { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .pill { margin-left: auto; display: flex; align-items: center; gap: 8px;
+    padding: 5px 14px 5px 8px; border-radius: 999px; font-weight: 600; font-size: 14px;
+    background: rgba(255,69,58,.14); color: var(--red); transition: .25s; }
+  .pill.ok { background: rgba(48,209,88,.16); color: var(--green); }
+  .dot { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 11px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 16px; display: grid; gap: 12px; }
+  code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  pre { background: #0e0e11; border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; overflow: auto; margin: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 10px 16px;
+    background: #232329; color: var(--text); cursor: pointer; transition: transform .12s, background .2s; }
+  button:hover { background: #2c2c34; }
+  button:active { transform: scale(.97); }
+  button.primary { background: var(--blue); color: #fff; }
+  button.danger { background: rgba(255,69,58,.18); color: var(--red); }
+  .muted { color: var(--dim); }
+  .kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
+    padding: 1px 6px; font-size: 12px; }
+  .log { max-height: 180px; overflow: auto; font-size: 12px; color: var(--dim);
+    display: grid; gap: 2px; }
+  .state { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="island" id="island">
+    <span class="chest">🧰</span>
+    <span class="count" id="count">0</span>
+    <span class="clock" id="clock">00:00</span>
+    <span class="pill" id="pill"><span class="dot">☹</span><span id="pillText">Disconnected</span></span>
+  </div>
+
+  <h1 style="margin-top:26px">HUD bridge</h1>
+  <p class="muted">Эта страница — то, что нужно открыть <b>внутри Фортанайта</b> (Creative → устройство
+  «HUD Message» / «Pop-up dialog» с интернет-адресом, либо на втором экране). Трекер слушает
+  <code id="endpoint">http://127.0.0.1:4783</code> и рисует островок поверх игры.</p>
+
+  <div class="row">
+    <button class="primary" id="btnConnect">Connect</button>
+    <button id="btnDisconnect">Disconnect</button>
+    <button id="btnChest">+ Chest</button>
+    <button id="btnToggle">Toggle (F1)</button>
+    <button class="danger" id="btnReset">Reset</button>
+  </div>
+
+  <h2>Состояние</h2>
+  <div class="card state">
+    <span>Связь с трекером</span><b id="bridge">…</b>
+    <span>Сундуков в сессии</span><b id="sess">0</b>
+    <span>Последнее событие</span><b id="last">—</b>
+  </div>
+
+  <h2>События</h2>
+  <div class="card">
+    <p style="margin:0">Островок шлёт POST на этот адрес. Он же — «хаб»: <b>F1</b> на ПК
+    включает трекинг (полоса заливает островок) и выключает его обратно в хаб.</p>
+<pre>{"tier":"common"}                  // открыт обычный сундук  (цвет не важен)
+{"rarity":"epic"}                  // то же, в другой записи
+{"type":"chest"}                   // сундук без деталей
+{"type":"connected"}               // старт матча / трек активен
+{"type":"disconnected"}            // матч закончился</pre>
+    <div class="row">
+      <button id="copyCurl">Скопировать curl</button>
+      <span class="muted">Проверка с ПК: <code id="curlLine">curl -X POST …</code></span>
+    </div>
+    <p class="muted" style="margin:0">Ключ <span class="kbd">F1</span> переключает трекинг
+    глобально (работает и когда фокус в Фортанайте).</p>
+  </div>
+
+  <h2>Журнал событий</h2>
+  <div class="card log" id="log"></div>
+</main>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const port = params.get('port') || 4783;
+  const base = `http://127.0.0.1:${port}`;
+  const $ = (id) => document.getElementById(id);
+  $('endpoint').textContent = base;
+  $('curlLine').textContent = `curl -X POST ${base}/event -d '{"type":"chest"}'`;
+
+  const state = { count: 0, started: Date.now(), connected: false, bridge: false, sess: 0 };
+
+  function log(msg) {
+    const el = document.createElement('div');
+    el.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    const box = $('log');
+    box.prepend(el);
+    while (box.childElementCount > 80) box.lastElementChild.remove();
+  }
+
+  function paint() {
+    $('count').textContent = state.count;
+    $('sess').textContent = state.sess;
+    const pill = $('pill');
+    pill.classList.toggle('ok', state.connected);
+    $('pillText').textContent = state.connected ? 'Connected' : 'Disconnected';
+    pill.querySelector('.dot').textContent = state.connected ? '☺' : '☹';
+    $('bridge').textContent = state.bridge ? 'есть' : 'нет';
+    $('bridge').style.color = state.bridge ? 'var(--green)' : 'var(--red)';
+  }
+  setInterval(() => {
+    const s = Math.floor((Date.now() - state.started) / 1000);
+    $('clock').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }, 500);
+
+  async function send(payload, why) {
+    try {
+      const res = await fetch(base + '/event', {
+        method: 'POST', mode: 'cors', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      state.bridge = true;
+      state.last = why;
+      $('last').textContent = why;
+      log('sended: ' + JSON.stringify(payload));
+      return true;
+    } catch (e) {
+      state.bridge = false;
+      log('ошибка: ' + e.message + ' (трекер запущен?)');
+      return false;
+    } finally { paint(); }
+  }
+
+  async function ping() {
+    try {
+      const res = await fetch(base + '/ping', { cache: 'no-store' });
+      const js = await res.json();
+      state.bridge = true;
+      state.sess = js.chests ?? state.sess;
+      state.connected = !!js.connected;
+    } catch { state.bridge = false; }
+    paint();
+  }
+
+  $('btnConnect').onclick = async () => {
+    state.connected = true; state.started = Date.now(); paint();
+    await send({ type: 'connected' }, 'connect');
+  };
+  $('btnDisconnect').onclick = async () => {
+    state.connected = false; paint();
+    await send({ type: 'disconnected' }, 'disconnect');
+  };
+  $('btnChest').onclick = async () => {
+    state.count++; state.sess++; paint();
+    await send({ type: 'chest' }, 'chest');
+  };
+  $('btnToggle').onclick = () => send({ type: 'toggle' }, 'toggle');
+  $('btnReset').onclick = async () => {
+    state.count = 0; state.sess = 0; paint();
+    await send({ type: 'reset' }, 'reset');
+  };
+  $('copyCurl').onclick = () => navigator.clipboard?.writeText(
+    `curl -X POST ${base}/event -d '{"type":"chest"}'`);
+
+  // receiving side: island can also be driven by the tracker (GET state)
+  let t0 = performance.now(), frames = 0;
+  function loop(now) {
+    frames++;
+    if (now - t0 > 3000) { ping(); t0 = now; }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // in-game keyboard: F1 mirrors the global hotkey
+  addEventListener('keydown', (e) => { if (e.key === 'F1') { e.preventDefault(); send({ type: 'toggle' }, 'F1'); } });
+  ping();
+  log('hud ready → ' + base);
+})();
+</script>
+</body>
+</html>
